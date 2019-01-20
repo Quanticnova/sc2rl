@@ -48,7 +48,7 @@ class MinigameEnvironment:
         self._terminal = True
 
         self.action_space = 10
-        FACTOR = 9 # TODO
+        FACTOR = 5 # TODO
         self.observation_space = [84, 84, FACTOR] # 
         self.select_space = Actuator._SELECT_SPACE
 
@@ -178,13 +178,16 @@ class MinigameEnvironment:
         '''
         Combines the previous and current frame for observations
         '''
-        assert self._prev_frame is not None and self._curr_frame is not None, 'Returning to agent after less than 2 frames should be impossible'
+        # assert self._prev_frame is not None and self._curr_frame is not None, 'Returning to agent after less than 2 frames should be impossible'
 
-        custom_prev = self.state_modifier_func(self._prev_frame)[1:]
+        # custom_prev = self.state_modifier_func(self._prev_frame)[1:]
         custom_curr = self.state_modifier_func(self._curr_frame)
         custom_curr = custom_curr[np.r_[1:len(custom_curr),0]] # move selected frame to end
-        custom_frames = np.append(custom_prev, custom_curr, axis=0)
-        return custom_frames
+        # custom_frames = np.append(custom_prev, custom_curr, axis=0)
+        # return custom_frames
+
+        # Return single frame for LSTM
+        return custom_curr
 
     def _reset_env(self):
         self._prev_frame = self._curr_frame
