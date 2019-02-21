@@ -21,7 +21,7 @@ import action_interface
 np.set_printoptions(linewidth=200, precision=4)
 
 class Network(object):
-    def __init__(self, env, scope, num_layers, num_units, obs_plc, act_plc, select_act_plc, tl_plc, trainable=True):
+    def __init__(self, env, scope, num_layers, num_units, obs_plc, act_plc, select_act_plc, tl_plc, lstm_plc, trainable=True):
         
         self.filters1 = 64
         self.filters2 = 128
@@ -42,6 +42,7 @@ class Network(object):
         self.acts_place = act_plc
         self.select_acts_place = select_act_plc
         self.tl_plc = tl_plc
+        self.lstm_state_place = lstm_plc
 
         self.p , self.v, self.select_p, self.logstd, self.select_logstd = self._build_network(num_layers=num_layers, num_units=num_units)
         self.act_op = self.action_sample()
@@ -68,6 +69,11 @@ class Network(object):
                 activation=self.activation)
 
             x = tf.contrib.layers.flatten(baseline_conv_output)
+            
+            # TODO: Insert LSTM here
+            lstm = tf.nn.rnn_cell.LSTMCell(num_units)
+            x, new_lstm_state = lstm(x, self.lstm_state_place)
+            # TODO: Reset LSTM after episode
             
             # Initializes fully connected layers
             for i in range(num_layers):
@@ -116,6 +122,8 @@ class Network(object):
                 
             ### Maybe add more dense layers
             select_p = tf.contrib.layers.flatten(select_p)
+
+            # TODO: Add same LSTM here
             
             ### FC layers for top left
             select_p_tl = select_p
@@ -184,7 +192,7 @@ class Network(object):
                                      
             select_logstd = tf.get_variable(name="select_logstd", shape=[self.select_size], initializer=tf.zeros_initializer)
 
-        return action, value, [select_p_x1, select_p_y1, select_p_x2, select_p_y2], logstd, select_logstd
+        return action, value, [select_p_x1, select_p_y1, select_p_x2, select_p_y2], logstd, select_logstd, new_lstm_state
 
     def action_sample(self):
         return self.p #+ tf.exp(self.logstd) * tf.random_normal(tf.shape(self.p))
@@ -236,6 +244,9 @@ class PPOAgent(object):
                                          
         self.select_acts_place = tf.placeholder(shape=(None, 4, self.env.select_space),
                                          name="sac", dtype=tf.float32)
+        #TODO add LSTM state shape
+        self.lstm_state_place = tf.placeholder(shape=None,
+                                         name="lstm", dtype=tf.float32)
 
         self.tl_place = tf.placeholder(shape=[None, 2*env.select_space], dtype=tf.float32)
 
@@ -247,7 +258,8 @@ class PPOAgent(object):
                            obs_plc=self.obs_place,
                            act_plc=self.acts_place,
                            tl_plc = self.tl_place,
-                           select_act_plc=self.select_acts_place)
+                           select_act_plc=self.select_acts_place,
+                           lstm_plc = self.lstm_state_place)
 
         self.old_net = Network(env=self.env,
                                scope="old_pi",
@@ -257,6 +269,7 @@ class PPOAgent(object):
                                act_plc=self.acts_place,
                                tl_plc=self.tl_place,
                                select_act_plc=self.select_acts_place,
+                               lstm_plc = self.lstm_state_place,
                                trainable=False)
 
         # tensorflow operators
