@@ -44,16 +44,18 @@ class Network(object):
         self.tl_plc = tl_plc
         self.lstm_state_place = lstm_plc
 
-        self.p , self.v, self.select_p, self.logstd, self.select_logstd = self._build_network(num_layers=num_layers, num_units=num_units)
+        self.p , self.v, self.select_p, self.logstd, self.select_logstd, self.lstm, self.next_lstm_state = self._build_network(num_layers=num_layers, num_units=num_units)
         self.act_op = self.action_sample()
         
         
 
     def _build_network(self, num_layers, num_units):
         with tf.variable_scope(self.scope):
+            # Shape: [1, 84, 84, 5]
             x = self.obs_place
             
             # Initializes convolutional layers
+            # Output shape: [1, 21, 21, 64]
             x = tf.layers.conv2d(x,
                 filters=self.filters1,
                 kernel_size=[8, 8],
@@ -61,6 +63,7 @@ class Network(object):
                 strides=(4, 4),
                 activation=self.activation)
 
+            # Output shape: [1, 11, 11, 128]
             baseline_conv_output = tf.layers.conv2d(x,
                 filters=self.filters2,
                 kernel_size=[4, 4],
@@ -68,11 +71,12 @@ class Network(object):
                 strides=2,
                 activation=self.activation)
 
+            # Output shape: [1, 15488]
             x = tf.contrib.layers.flatten(baseline_conv_output)
             
             # TODO: Insert LSTM here
             lstm = tf.nn.rnn_cell.LSTMCell(num_units)
-            x, new_lstm_state = lstm(x, self.lstm_state_place)
+            x, next_lstm_state = lstm(x, self.lstm_state_place)
             # TODO: Reset LSTM after episode
             
             # Initializes fully connected layers
@@ -192,7 +196,7 @@ class Network(object):
                                      
             select_logstd = tf.get_variable(name="select_logstd", shape=[self.select_size], initializer=tf.zeros_initializer)
 
-        return action, value, [select_p_x1, select_p_y1, select_p_x2, select_p_y2], logstd, select_logstd, new_lstm_state
+        return action, value, [select_p_x1, select_p_y1, select_p_x2, select_p_y2], logstd, select_logstd, lstm, next_lstm_state
 
     def action_sample(self):
         return self.p #+ tf.exp(self.logstd) * tf.random_normal(tf.shape(self.p))
@@ -244,8 +248,7 @@ class PPOAgent(object):
                                          
         self.select_acts_place = tf.placeholder(shape=(None, 4, self.env.select_space),
                                          name="sac", dtype=tf.float32)
-        #TODO add LSTM state shape
-        self.lstm_state_place = tf.placeholder(shape=None,
+        self.lstm_state_place = tf.placeholder(shape=(None, (84//4//2 + 1)**2 * 128),
                                          name="lstm", dtype=tf.float32)
 
         self.tl_place = tf.placeholder(shape=[None, 2*env.select_space], dtype=tf.float32)
@@ -272,11 +275,17 @@ class PPOAgent(object):
                                lstm_plc = self.lstm_state_place,
                                trainable=False)
 
+        self.reset_lstm()
+
         # tensorflow operators
         self.assign_op = self.assign(self.net, self.old_net)
         self.select_ent, self.select_pol_loss, self.vf_loss, self.select_update_op = self.select_update()
         self.move_ent, self.move_pol_loss, self.vf_loss, self.move_update_op = self.move_update()
         self.saver = tf.train.Saver()
+
+    def reset_lstm(self):
+        # Batch size 1
+        self.next_lstm_state = self.net.lstm.zero_state(1)
 
     def select_logp(self, net):
         logp = 0
@@ -447,6 +456,7 @@ class PPOAgent(object):
                         ob, reward, done, _ = env.reset()
                         ob = self.state_reshape(ob)
                         t += 1
+                        self.reset_lstm()
                         continue
                         
                     t -= 1
@@ -465,6 +475,7 @@ class PPOAgent(object):
                     ob = self.state_reshape(ob)
                     t += 1
                     i += 1
+                    self.reset_lstm()
                     continue
                     
                 selection = transformed_select
@@ -504,6 +515,7 @@ class PPOAgent(object):
                     ob, reward, done, _ = env.reset()
                     ob = self.state_reshape(ob)
                     ob = self.normalize(ob)
+                    self.reset_lstm()
                 
             ### Handles end of 2-phase step        
             if (j == 1):
@@ -514,13 +526,17 @@ class PPOAgent(object):
             t += 1
 
     def act(self, ob):
-        actions, value = self.session.run([self.net.act_op, self.net.v], feed_dict={
-            self.net.obs_place: ob[None]
+        actions, value, self.next_lstm_state = self.session.run([self.net.act_op, self.net.v, self.net.next_lstm_state], feed_dict={
+            self.net.obs_place: ob[None],
+            self.net.lstm_state_place: self.next_lstm_state
         })
         return actions, value
         
     def select(self, ob):
-        x1, y1, value = self.session.run(self.net.select_p[:2] + [self.net.v], feed_dict={ self.net.obs_place: ob[None]})
+        x1, y1, value = self.session.run(self.net.select_p[:2] + [self.net.v], feed_dict={
+            self.net.obs_place: ob[None],
+            self.net.lstm_state_place: self.next_lstm_state
+        })
         tl = self.select_selection(np.array([x1[0], y1[0]]))
         tl_plc = np.zeros((2*self.env.select_space))
         x1 = tl[0]
@@ -528,7 +544,10 @@ class PPOAgent(object):
         
         tl_plc[x1] = 1
         tl_plc[self.env.select_space+y1] = 1
-        x2, y2 = self.session.run(self.net.select_p[2:], feed_dict={ self.net.obs_place: ob[None], self.net.tl_plc: tl_plc[None]
+        x2, y2, self.next_lstm_state = self.session.run(self.net.select_p[2:] + [self.net.next_lstm_state], feed_dict={
+            self.net.obs_place: ob[None],
+            self.net.tl_plc: tl_plc[None],
+            self.net.lstm_state_place: self.next_lstm_state
         })
         br = self.select_selection(np.array([x2[0], y2[0]]))
         
