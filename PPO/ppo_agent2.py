@@ -76,6 +76,8 @@ class Network(object):
             
             # TODO: Insert LSTM here
             lstm = tf.nn.rnn_cell.LSTMCell(num_units)
+            # lstm_state_place: Tensor("lstm:0", shape=(?, 15488), dtype=float32)
+            # next_lstm_state: LSTMStateTuple(c=<tf.Tensor 'pi/lstm_cell/add_1:0' shape=(1, 1024) dtype=float32>, h=<tf.Tensor 'pi/lstm_cell/mul_2:0' shape=(1, 1024) dtype=float32>)
             x, next_lstm_state = lstm(x, self.lstm_state_place)
             # TODO: Reset LSTM after episode
             
@@ -285,7 +287,7 @@ class PPOAgent(object):
 
     def reset_lstm(self):
         # Batch size 1
-        self.next_lstm_state = self.net.lstm.zero_state(1)
+        self.next_lstm_state = self.net.lstm.zero_state(1, dtype=tf.float32)
 
     def select_logp(self, net):
         logp = 0
